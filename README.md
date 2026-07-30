@@ -85,7 +85,6 @@ platforms:
         get_identities: true
         list_conversations: true
         get_conversation_info: true
-        create_chat: true
         create_channel: true
         list_members: true
         add_members: true
@@ -155,7 +154,7 @@ When enabled, a `telex` tool lets the agent inspect Telex, manage channels, and 
 | `search_identities` / `get_identities` | find or resolve users and bots |
 | `list_conversations` / `get_conversation_info` | chats and channels |
 | `list_members` / `add_members` | channel membership |
-| `create_chat` / `create_channel` | start a 1:1 (seeded with a first message) or a channel |
+| `create_channel` | create a channel (a 1:1 needs no creation — `send_message` with `peer_id`/`email` opens the default chat itself) |
 | `get_conversation_messages` | history, chronological |
 | `send_message` | post into any conversation |
 

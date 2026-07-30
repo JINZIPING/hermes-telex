@@ -1,6 +1,6 @@
 """The ``telex`` agent tool: Telex lookups, channel management and sending
-(port of openclaw-telex tool.ts / tool-schema.ts, plus the send/create_chat
-actions hermes needs because the core ``send_message`` tool's target parser
+(port of openclaw-telex tool.ts / tool-schema.ts, plus the send_message
+action hermes needs because the core ``send_message`` tool's target parser
 does not recognise Telex ids).
 Each action can be disabled per account under ``tools.<name>``.
 """
@@ -27,12 +27,14 @@ from .types import (
 
 logger = get_logger("tool")
 
+# No create_chat action: Telex's send-message with peer_id creates/reuses the
+# default 1:1 itself, while create-chat always spawns a NEW titled conversation
+# — an agent picking it to "start a DM" would fragment the human's chat list.
 ACTIONS = (
     "search_identities",
     "get_identities",
     "list_conversations",
     "get_conversation_info",
-    "create_chat",
     "create_channel",
     "list_members",
     "add_members",
@@ -46,7 +48,7 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
         "Telex lookups, channel management and sending "
         "(identities/conversations/members/messages). "
         "Actions: search_identities, get_identities, list_conversations, "
-        "get_conversation_info, create_chat, create_channel, list_members, "
+        "get_conversation_info, create_channel, list_members, "
         "add_members, get_conversation_messages, send_message. "
         "Use send_message to post into any Telex conversation — give it "
         "conversation_id (from list_conversations/create_channel) or peer_id/email "
@@ -54,7 +56,7 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
         "such as a channel just created. Replying to the message you are currently "
         "handling needs no tool call. Mention someone by putting [@](mention:<identity_id>) in the "
         "text (or [@all](mention:all)); the 'mention' field of identity/member "
-        "results is a ready-to-paste token. The mutating actions (create_chat, "
+        "results is a ready-to-paste token. The mutating actions ("
         "create_channel, add_members, send_message) can be disabled per account."
     ),
     "parameters": {
@@ -68,13 +70,13 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
             "offset": {"type": "integer"},
             "limit": {"type": "integer", "description": "page size (1-100)"},
             "conversation_id": {"type": "string", "description": "16-char hex id"},
-            "title": {"type": "string", "description": "create_channel: channel title (1-200); create_chat: optional title"},
+            "title": {"type": "string", "description": "create_channel: channel title (1-200)"},
             "identity_ids": {"type": "array", "items": {"type": "string"}, "description": "create_channel/add_members: member identity ids"},
             "before_seq": {"type": "integer"},
             "after_seq": {"type": "integer"},
-            "text": {"type": "string", "description": "send_message/create_chat: message text (mentions via [@](mention:<id>))"},
-            "peer_id": {"type": "string", "description": "send_message/create_chat: target identity id for a 1:1 chat"},
-            "email": {"type": "string", "description": "send_message/create_chat: target identity email for a 1:1 chat"},
+            "text": {"type": "string", "description": "send_message: message text (mentions via [@](mention:<id>))"},
+            "peer_id": {"type": "string", "description": "send_message: target identity id for a 1:1 chat"},
+            "email": {"type": "string", "description": "send_message: target identity email for a 1:1 chat"},
             "media_paths": {"type": "array", "items": {"type": "string"}, "description": "send_message: local file paths to attach (each <= 20 MiB)"},
         },
         "required": ["action"],
@@ -252,19 +254,6 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
                 text=text or None, media_units=units or None,
             )
             return json.dumps({"message": _sent_out(message)})
-        if action == "create_chat":
-            peer_id, err = await _resolve_peer_id(client, args)
-            if err:
-                return json.dumps({"error": err})
-            if not peer_id:
-                return json.dumps({"error": "provide peer_id or email"})
-            text = args.get("text") or ""
-            if not text:
-                # create-chat seeds the conversation with its first message;
-                # attachments can follow via send_message.
-                return json.dumps({"error": "create_chat requires text for the first message"})
-            conv = await client.create_chat(peer_id, [blocks_mod.text_block(text)], args.get("title"))
-            return json.dumps({"conversation": _conversation_out(conv)})
         if action == "create_channel":
             ids, err = await _resolve_member_ids(client, args.get("identity_ids"), args.get("emails"))
             if err:

@@ -20,7 +20,6 @@ TOOL_KEYS = (
     "get_identities",
     "list_conversations",
     "get_conversation_info",
-    "create_chat",
     "create_channel",
     "list_members",
     "add_members",

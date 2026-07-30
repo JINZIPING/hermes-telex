@@ -1,4 +1,4 @@
-"""Tool send/create_chat actions: targeting, validation, media, per-account gate.
+"""Tool send_message action: targeting, validation, media, per-account gate.
 
 These exist because hermes's core send_message cannot address Telex ids (its
 _parse_target_ref has no telex branch), so the plugin owns sending.
@@ -84,20 +84,12 @@ async def test_send_mention_token_passes_through(wired):
     assert "[@](mention:u1)" in client.sent[-1]["blocks"][0]["text"]
 
 
-async def test_create_chat_by_email_seeds_first_message(wired):
-    client, _ = wired
-    out = await _call(action="create_chat", email="a@b.com", text="hi there", title="T")
-    assert out["conversation"]["id"] == "newchat"
-    created = client.created_chats[0]
-    assert created["peer_id"] == "u1" and created["title"] == "T"
-    assert created["blocks"][0]["text"] == "hi there"
-
-
-async def test_create_chat_requires_peer_and_text(wired):
-    no_peer = await _call(action="create_chat", text="hi")
-    assert "peer_id or email" in no_peer["error"]
-    no_text = await _call(action="create_chat", peer_id="u1")
-    assert "requires text" in no_text["error"]
+async def test_create_chat_action_removed(wired):
+    # send_message(peer_id) opens the default 1:1 itself; a create_chat action
+    # would let the agent fragment a human's chat list with parallel titled
+    # conversations, so it must not exist.
+    out = await _call(action="create_chat", peer_id="u1", text="hi")
+    assert "unknown action" in out["error"]
 
 
 async def test_actions_disabled_per_account(monkeypatch):
