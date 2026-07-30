@@ -178,12 +178,30 @@ Mention someone with the inline token `[@](mention:<identity_id>)` (or
 `[@all](mention:all)`); identity and member results carry a ready-to-paste
 `mention` field.
 
-> **Why the plugin owns sending.** Hermes's core `send_message` tool resolves
-> targets through a hardcoded per-platform parser (`_parse_target_ref`) that has
-> no Telex branch, so a 16-hex Telex id is neither matched nor passed through and
-> the call fails before reaching the adapter. Until that lands upstream, use the
-> `telex` tool's `send_message` action. The platform adapter itself (auto-replies,
-> home-channel delivery, cron) is unaffected.
+### Why the plugin owns sending
+
+Hermes's core `send_message` resolves targets through a hardcoded per-platform
+parser (`_parse_target_ref`) that has no Telex branch, so a 16-hex Telex id is
+not recognised as explicit. It then falls back to the channel directory, which
+for plugin platforms is built from conversations hermes has **already seen**
+(session rows). The practical consequence:
+
+| Core `send_message` target | Result |
+| --- | --- |
+| `telex` (bare, home channel) | works |
+| `telex:<id>` of an already-active conversation | works — the directory has an exact-id entry |
+| `telex:<id>` of a **new** conversation (e.g. just created) | **fails** before reaching the adapter |
+
+That last row is why an agent could create a channel and add members but not post
+the first message. The `telex` tool's `send_message` talks to the API directly and
+has no such dependency, so it is the reliable choice for every Telex target.
+
+Nothing in the platform adapter is affected: auto-replies, home-channel delivery
+and cron continue to work through it.
+
+There is no programmatic way for a plugin to claim the core tool's routing
+(`PlatformEntry` exposes no target-parser hook), so the agent is steered by
+`platform_hint` and this tool's description instead.
 
 ## Local test environment
 

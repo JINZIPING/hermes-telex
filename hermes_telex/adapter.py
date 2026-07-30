@@ -332,10 +332,12 @@ _TELEX_PLATFORM_HINT = (
     "To @-mention someone, write the inline token [@](mention:<identity_id>) "
     "(16-char hex id from the telex tool or message context); [@all](mention:all) notifies "
     "everyone; the server fills in the display name. Plain @name text does not notify anyone. "
-    "Text replies deliver automatically. To send a file or image, write MEDIA:<absolute path> "
-    "on its own line. To post into a different Telex conversation, use the telex tool: "
-    'telex(action="send_message", conversation_id="<16-hex id>", text="...") — or peer_id/email '
-    "for a 1:1. Do not use the core send_message tool for Telex: it cannot address Telex ids. "
+    "Text replies deliver automatically — answering the message you are handling needs no tool call. "
+    "To send a file or image, write MEDIA:<absolute path> on its own line. "
+    "To post into any other Telex conversation — including a channel you just created — use the "
+    'telex tool: telex(action="send_message", conversation_id="<16-hex id>", text="..."), or '
+    "peer_id/email for a 1:1. Use it rather than the core send_message tool for Telex targets: "
+    "core resolves only conversations hermes has already seen, so it fails on new ones. "
     "Keep replies concise and conversational."
 )
 
