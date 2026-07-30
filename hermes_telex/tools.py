@@ -1,6 +1,7 @@
-"""The ``telex`` agent tool: Telex lookups and channel management (port of
-openclaw-telex tool.ts / tool-schema.ts). NOT for sending — use
-send_message(target="telex:...").
+"""The ``telex`` agent tool: Telex lookups, channel management and sending
+(port of openclaw-telex tool.ts / tool-schema.ts, plus the send_message
+action hermes needs because the core ``send_message`` tool's target parser
+does not recognise Telex ids).
 Each action can be disabled per account under ``tools.<name>``.
 """
 
@@ -10,8 +11,11 @@ import json
 from typing import Any
 
 from . import accounts as acct
+from . import blocks as blocks_mod
 from . import config as cfg
+from . import media as media_mod
 from .client import get_telex_client
+from .send import send_telex_message
 from .log import get_logger
 from .types import (
     CONVERSATION_KIND_LABELS,
@@ -23,6 +27,9 @@ from .types import (
 
 logger = get_logger("tool")
 
+# No create_chat action: Telex's send-message with peer_id creates/reuses the
+# default 1:1 itself, while create-chat always spawns a NEW titled conversation
+# — an agent picking it to "start a DM" would fragment the human's chat list.
 ACTIONS = (
     "search_identities",
     "get_identities",
@@ -32,17 +39,25 @@ ACTIONS = (
     "list_members",
     "add_members",
     "get_conversation_messages",
+    "send_message",
 )
 
 TELEX_TOOL_SCHEMA: dict[str, Any] = {
     "name": "telex",
     "description": (
-        "Telex lookups and channel management (identities/conversations/members/messages). "
-        'NOT for sending — use send_message(target="telex:<chat>") to reply. '
+        "Telex lookups, channel management and sending "
+        "(identities/conversations/members/messages). "
         "Actions: search_identities, get_identities, list_conversations, "
-        "get_conversation_info, create_channel, list_members, add_members, "
-        "get_conversation_messages. The channel management actions "
-        "(create_channel, add_members) can be disabled per account."
+        "get_conversation_info, create_channel, list_members, "
+        "add_members, get_conversation_messages, send_message. "
+        "Use send_message to post into any Telex conversation — give it "
+        "conversation_id (from list_conversations/create_channel) or peer_id/email "
+        "for a 1:1. It reaches conversations the core send_message tool cannot, "
+        "such as a channel just created. Replying to the message you are currently "
+        "handling needs no tool call. Mention someone by putting [@](mention:<identity_id>) in the "
+        "text (or [@all](mention:all)); the 'mention' field of identity/member "
+        "results is a ready-to-paste token. The mutating actions ("
+        "create_channel, add_members, send_message) can be disabled per account."
     ),
     "parameters": {
         "type": "object",
@@ -59,6 +74,10 @@ TELEX_TOOL_SCHEMA: dict[str, Any] = {
             "identity_ids": {"type": "array", "items": {"type": "string"}, "description": "create_channel/add_members: member identity ids"},
             "before_seq": {"type": "integer"},
             "after_seq": {"type": "integer"},
+            "text": {"type": "string", "description": "send_message: message text (mentions via [@](mention:<id>))"},
+            "peer_id": {"type": "string", "description": "send_message: target identity id for a 1:1 chat"},
+            "email": {"type": "string", "description": "send_message: target identity email for a 1:1 chat"},
+            "media_paths": {"type": "array", "items": {"type": "string"}, "description": "send_message: local file paths to attach (each <= 20 MiB)"},
         },
         "required": ["action"],
     },
@@ -160,6 +179,29 @@ async def _resolve_member_ids(client, identity_ids, emails) -> tuple[list[str], 
     return ids, None
 
 
+async def _resolve_peer_id(client, args: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Resolve a 1:1 target from peer_id or email. Returns (peer_id, error)."""
+    peer_id = (args.get("peer_id") or "").strip()
+    if peer_id:
+        return peer_id, None
+    email = (args.get("email") or "").strip()
+    if not email:
+        return None, None
+    identities = await client.get_identities([], [email])
+    if not identities:
+        return None, f"no identity found for email: {email}"
+    return identities[0]["id"], None
+
+
+def _sent_out(message: dict[str, Any] | None) -> dict[str, Any]:
+    message = message or {}
+    return {
+        "id": message.get("id"),
+        "conversation_id": message.get("conversation_id"),
+        "seq": message.get("seq"),
+    }
+
+
 async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
     # The tool registry invokes handlers as handler(args, **kwargs) — e.g. task_id.
     # Accept and ignore the extra kwargs.
@@ -193,6 +235,25 @@ async def telex_tool_handler(args: dict[str, Any], **_kwargs: Any) -> str:
         if action == "get_conversation_info":
             conv = await client.get_conversation(args["conversation_id"], force_refresh=True)
             return json.dumps({"conversation": _conversation_out(conv)})
+        if action == "send_message":
+            conversation_id = (args.get("conversation_id") or "").strip()
+            peer_id, err = await _resolve_peer_id(client, args)
+            if err:
+                return json.dumps({"error": err})
+            if bool(conversation_id) == bool(peer_id):
+                return json.dumps({
+                    "error": "provide exactly one target: conversation_id, or peer_id/email"
+                })
+            text = args.get("text") or ""
+            paths = args.get("media_paths") or []
+            if not text and not paths:
+                return json.dumps({"error": "provide text and/or media_paths"})
+            units = [(p, media_mod.kind_for_path(p)) for p in paths]
+            message = await send_telex_message(
+                client, conversation_id=conversation_id or None, peer_id=peer_id,
+                text=text or None, media_units=units or None,
+            )
+            return json.dumps({"message": _sent_out(message)})
         if action == "create_channel":
             ids, err = await _resolve_member_ids(client, args.get("identity_ids"), args.get("emails"))
             if err:

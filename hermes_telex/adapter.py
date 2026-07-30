@@ -106,11 +106,23 @@ class TelexAdapter(BasePlatformAdapter):
 
     # -- lifecycle ----------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False, **_kwargs) -> bool:
+        # Newer hermes builds always pass is_reconnect (gateway/run.py calls
+        # adapter.connect(is_reconnect=...)); older builds call bare connect().
         if not self._runtimes:
             logger.warning("no enabled/configured Telex accounts; nothing to connect")
             return False
         for account_id, rt in self._runtimes.items():
+            # Reconnect re-entry: stop a previous monitor before starting a new
+            # one, or each retry would stack another subscribe loop.
+            if rt.monitor_task is not None and not rt.monitor_task.done():
+                if rt.stop_event is not None:
+                    rt.stop_event.set()
+                rt.monitor_task.cancel()
+                try:
+                    await rt.monitor_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             rt.client.arm_self_id(rt.account.bot_id)
             rt.dispatcher = TelexDispatcher(self, rt.account, rt.client)
             rt.stop_event = asyncio.Event()
@@ -323,14 +335,8 @@ async def _telex_standalone_send(pconfig, chat_id, message, *, thread_id=None,
 
 
 def _kind_for(path: str) -> str:
-    ext = os.path.splitext(path)[1].lower()
-    if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
-        return "image"
-    if ext in {".mp4", ".mov", ".webm"}:
-        return "video"
-    if ext in {".ogg", ".mp3", ".wav", ".m4a"}:
-        return "audio"
-    return "document"
+    from .media import kind_for_path
+    return kind_for_path(path)
 
 
 _TELEX_PLATFORM_HINT = (
@@ -338,9 +344,12 @@ _TELEX_PLATFORM_HINT = (
     "To @-mention someone, write the inline token [@](mention:<identity_id>) "
     "(16-char hex id from the telex tool or message context); [@all](mention:all) notifies "
     "everyone; the server fills in the display name. Plain @name text does not notify anyone. "
-    "Text replies deliver automatically. To send a file or image, write MEDIA:<absolute path> "
-    "on its own line (works in a plain reply and in send_message text). To message a different "
-    'conversation, call send_message with target "telex:<conversation id>". '
+    "Text replies deliver automatically — answering the message you are handling needs no tool call. "
+    "To send a file or image, write MEDIA:<absolute path> on its own line. "
+    "To post into any other Telex conversation — including a channel you just created — use the "
+    'telex tool: telex(action="send_message", conversation_id="<16-hex id>", text="..."), or '
+    "peer_id/email for a 1:1. Use it rather than the core send_message tool for Telex targets: "
+    "core resolves only conversations hermes has already seen, so it fails on new ones. "
     "Keep replies concise and conversational."
 )
 

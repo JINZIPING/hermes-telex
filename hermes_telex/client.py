@@ -360,6 +360,16 @@ class TelexClient:
         res = await self._post("/create-channel", {"title": title, "identity_ids": identity_ids})
         return res.get("conversation", {})
 
+    # create-chat seeds the 1:1 with its first message, so blocks are required.
+    async def create_chat(
+        self, peer_id: str, blocks: list[dict[str, Any]], title: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"peer_id": peer_id, "data": {"blocks": blocks}}
+        if title:
+            body["title"] = title
+        res = await self._post("/create-chat", body)
+        return res.get("conversation", {})
+
     async def list_members(self, conversation_id: str) -> list[dict[str, Any]]:
         res = await self._get("/list-members", {"conversation_id": conversation_id})
         return res.get("members") or []

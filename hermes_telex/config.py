@@ -24,6 +24,7 @@ TOOL_KEYS = (
     "list_members",
     "add_members",
     "get_conversation_messages",
+    "send_message",
 )
 
 DEFAULTS = {

@@ -89,6 +89,7 @@ platforms:
         list_members: true
         add_members: true
         get_conversation_messages: true
+        send_message: true
       accounts:                          # optional multi-bot
         support:
           api_key: "<another bot key>"
@@ -146,21 +147,60 @@ hook; YAML is the full-featured (multi-account) config.
 
 ## Agent tool
 
-When enabled, a `telex` tool lets the agent inspect Telex and manage channels:
-`search_identities`, `get_identities`, `list_conversations`, `get_conversation_info`,
-`create_channel`, `list_members`, `add_members`, `get_conversation_messages`.
-Member emails resolve all-or-nothing: any unresolved email fails the call before
-anything is created or added. Each can be disabled under
-`platforms.telex.extra.tools`. It is **not** for sending — use
-`send_message(target="telex:<chat>")`.
+When enabled, a `telex` tool lets the agent inspect Telex, manage channels, and send:
 
-## send_message targets
-
-| Target | `send_message` target |
+| Action | Purpose |
 | --- | --- |
-| a conversation (chat or channel) | `telex:<conversation_id>` |
-| a 1:1 chat with an identity | `telex:peer/<identity_id>` |
-| a 1:1 chat by email | `telex:email/<email>` or `telex:<email>` |
+| `search_identities` / `get_identities` | find or resolve users and bots |
+| `list_conversations` / `get_conversation_info` | chats and channels |
+| `list_members` / `add_members` | channel membership |
+| `create_channel` | create a channel (a 1:1 needs no creation — `send_message` with `peer_id`/`email` opens the default chat itself) |
+| `get_conversation_messages` | history, chronological |
+| `send_message` | post into any conversation |
+
+Member emails resolve all-or-nothing: any unresolved email fails the call before
+anything is created or added. Each action can be disabled under
+`platforms.telex.extra.tools`.
+
+### Sending
+
+Replying to the message currently being handled needs no tool call — the reply
+delivers automatically. To post into *another* conversation:
+
+```
+telex(action="send_message", conversation_id="<16-hex id>", text="...")
+telex(action="send_message", peer_id="<identity id>", text="...")   # or email="a@b.com"
+telex(action="send_message", conversation_id="...", media_paths=["/abs/path.png"])
+```
+
+Mention someone with the inline token `[@](mention:<identity_id>)` (or
+`[@all](mention:all)`); identity and member results carry a ready-to-paste
+`mention` field.
+
+### Why the plugin owns sending
+
+Hermes's core `send_message` resolves targets through a hardcoded per-platform
+parser (`_parse_target_ref`) that has no Telex branch, so a 16-hex Telex id is
+not recognised as explicit. It then falls back to the channel directory, which
+for plugin platforms is built from conversations hermes has **already seen**
+(session rows). The practical consequence:
+
+| Core `send_message` target | Result |
+| --- | --- |
+| `telex` (bare, home channel) | works |
+| `telex:<id>` of an already-active conversation | works — the directory has an exact-id entry |
+| `telex:<id>` of a **new** conversation (e.g. just created) | **fails** before reaching the adapter |
+
+That last row is why an agent could create a channel and add members but not post
+the first message. The `telex` tool's `send_message` talks to the API directly and
+has no such dependency, so it is the reliable choice for every Telex target.
+
+Nothing in the platform adapter is affected: auto-replies, home-channel delivery
+and cron continue to work through it.
+
+There is no programmatic way for a plugin to claim the core tool's routing
+(`PlatformEntry` exposes no target-parser hook), so the agent is steered by
+`platform_hint` and this tool's description instead.
 
 ## Local test environment
 
