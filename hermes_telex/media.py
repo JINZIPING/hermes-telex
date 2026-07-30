@@ -54,6 +54,22 @@ except Exception:  # pragma: no cover
 
 _PLACEHOLDER = {"image": "image", "video": "video", "audio": "audio", "document": "file"}
 
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+_VIDEO_EXTS = {".mp4", ".mov", ".webm"}
+_AUDIO_EXTS = {".ogg", ".mp3", ".wav", ".m4a"}
+
+
+def kind_for_path(path: str) -> str:
+    """Map a local file path to a Telex media block kind."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in _IMAGE_EXTS:
+        return "image"
+    if ext in _VIDEO_EXTS:
+        return "video"
+    if ext in _AUDIO_EXTS:
+        return "audio"
+    return "document"
+
 
 @dataclass
 class InboundMedia:

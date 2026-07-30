@@ -21,6 +21,7 @@ class StubClient(TelexClient):
         self.uploaded: list[tuple[str, str]] = []
         self.downloads: dict[str, tuple[bytes, str]] = {}
         self.posts: list[tuple[str, dict]] = []
+        self.created_chats: list[dict] = []
 
     async def _post(self, path: str, body: dict):
         # Only the low-level paths not stubbed above reach here (e.g. /mark-read
@@ -73,6 +74,10 @@ class StubClient(TelexClient):
 
     async def set_activity(self, conversation_id, status):
         self.activities.append((conversation_id, status))
+
+    async def create_chat(self, peer_id, blocks, title=None):
+        self.created_chats.append({"peer_id": peer_id, "blocks": blocks, "title": title})
+        return {"id": "newchat", "kind": 0, "title": title or "", "peer_id": peer_id}
 
     async def upload_file(self, name, mime, data):
         self.uploaded.append((name, mime))

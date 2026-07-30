@@ -323,14 +323,8 @@ async def _telex_standalone_send(pconfig, chat_id, message, *, thread_id=None,
 
 
 def _kind_for(path: str) -> str:
-    ext = os.path.splitext(path)[1].lower()
-    if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
-        return "image"
-    if ext in {".mp4", ".mov", ".webm"}:
-        return "video"
-    if ext in {".ogg", ".mp3", ".wav", ".m4a"}:
-        return "audio"
-    return "document"
+    from .media import kind_for_path
+    return kind_for_path(path)
 
 
 _TELEX_PLATFORM_HINT = (
@@ -339,8 +333,9 @@ _TELEX_PLATFORM_HINT = (
     "(16-char hex id from the telex tool or message context); [@all](mention:all) notifies "
     "everyone; the server fills in the display name. Plain @name text does not notify anyone. "
     "Text replies deliver automatically. To send a file or image, write MEDIA:<absolute path> "
-    "on its own line (works in a plain reply and in send_message text). To message a different "
-    'conversation, call send_message with target "telex:<conversation id>". '
+    "on its own line. To post into a different Telex conversation, use the telex tool: "
+    'telex(action="send_message", conversation_id="<16-hex id>", text="...") — or peer_id/email '
+    "for a 1:1. Do not use the core send_message tool for Telex: it cannot address Telex ids. "
     "Keep replies concise and conversational."
 )
 
