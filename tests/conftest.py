@@ -20,6 +20,15 @@ class StubClient(TelexClient):
         self.activities: list[tuple[str, str]] = []
         self.uploaded: list[tuple[str, str]] = []
         self.downloads: dict[str, tuple[bytes, str]] = {}
+        self.posts: list[tuple[str, dict]] = []
+
+    async def _post(self, path: str, body: dict):
+        # Only the low-level paths not stubbed above reach here (e.g. /mark-read
+        # from sync_read_cursor), so the real watermark logic stays under test.
+        self.posts.append((path, body))
+        if path.endswith("/mark-read"):
+            return {"read_seq": body.get("read_seq")}
+        return {}
 
     async def get_conversation(self, conversation_id: str, force_refresh: bool = False) -> dict:
         return self.conversations.get(conversation_id, {"id": conversation_id, "kind": 0})

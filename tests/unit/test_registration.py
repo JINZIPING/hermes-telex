@@ -83,10 +83,12 @@ def test_env_enablement_home_channel_without_api_key(monkeypatch):
     assert "api_key" not in result  # nothing from env when only HOME_CHANNEL is set
 
 
-async def test_monitor_backfill_paging():
+async def test_monitor_repair_window_dispatches_settles_and_marks_read():
+    from hermes_telex.monitor import TelexSyncDriver
+
     c = StubClient()
-    # settled cursor at 2; messages 3,4,5 arrive during downtime
-    c.note_message("conv", 2, terminal=True)
+    # Server says read up to seq 2, conversation is at seq 4: 3 and 4 are the gap.
+    c.seed_conversation("conv", 2, 4)
     c.messages_by_conv["conv"] = [
         {"id": "m3", "conversation_id": "conv", "seq": 3, "status": 0, "flags": 0,
          "sender_id": "u", "data": {"blocks": []}},
@@ -98,9 +100,34 @@ async def test_monitor_backfill_paging():
     async def on_message(m):
         seen.append(m["seq"])
 
-    from hermes_telex.monitor import _backfill
-    await _backfill(c, on_message)
-    assert seen == [3, 4]
+    driver = TelexSyncDriver(c, on_message, account_id="test")
+    lag_remains = await driver._repair_window("conv")
+
+    assert seen == [3, 4]                       # gap dispatched in order
+    assert c.is_disposed("conv", 3) and c.is_disposed("conv", 4)
+    assert c.get_cursor("conv") == 4            # contiguous watermark marked read
+    assert lag_remains is False
+    assert ("/mark-read", {"conversation_id": "conv", "read_seq": 4}) in c.posts
+
+
+async def test_monitor_repair_skips_already_disposed():
+    from hermes_telex.monitor import TelexSyncDriver
+
+    c = StubClient()
+    c.seed_conversation("conv", 2, 3)
+    c.settle("conv", 3)                         # already handled, not yet marked
+    c.messages_by_conv["conv"] = [
+        {"id": "m3", "conversation_id": "conv", "seq": 3, "status": 0, "flags": 0,
+         "sender_id": "u", "data": {"blocks": []}},
+    ]
+    seen = []
+
+    async def on_message(m):
+        seen.append(m["seq"])
+
+    driver = TelexSyncDriver(c, on_message, account_id="test")
+    await driver._repair_window("conv")
+    assert seen == []                           # no re-dispatch
 
 
 async def test_standalone_send(tmp_path, monkeypatch):

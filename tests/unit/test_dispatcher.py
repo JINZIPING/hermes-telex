@@ -46,11 +46,14 @@ async def test_in_progress_and_flags_dropped():
     assert adapter.events == []
 
 
-async def test_dedup():
+async def test_dispatcher_does_not_dedup():
+    # Layering: dedup/settlement belong to the monitor (is_disposed/settle);
+    # the dispatcher only decides eligibility and hands off. See
+    # test_client_logic.test_dedup_by_settle for the dedup contract itself.
     disp, adapter, _ = _setup({"dm_policy": "open", "allow_from": ["*"]})
     await disp.handle(_msg(mid="dup"))
     await disp.handle(_msg(mid="dup"))
-    assert len(adapter.events) == 1
+    assert len(adapter.events) == 2
 
 
 async def test_dm_allowlist():

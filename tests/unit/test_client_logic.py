@@ -16,25 +16,49 @@ def test_self_echo_via_bot_id_and_sent_cache():
     assert c.is_own_message({"id": "z", "sender_id": "someoneelse"}) is True  # sent-id cache
 
 
-def test_dedup():
+def test_dedup_by_settle():
+    # Dedup is now cursor/settled based (the monitor gates on is_disposed).
     c = _c()
-    assert c.mark_processed("m1") is True
-    assert c.mark_processed("m1") is False
+    c.seed_conversation("conv", 0, 0)
+    assert c.is_disposed("conv", 5) is False
+    c.settle("conv", 5)
+    assert c.is_disposed("conv", 5) is True
 
 
-def test_watermark_backfill_targets_skip_pending():
+def test_unseeded_conversation_is_disposed():
+    # Nothing is replayed for a conversation that was never seeded from the
+    # server read cursor — otherwise a restart would re-dispatch history.
     c = _c()
-    c.note_message("conv", 5, terminal=True)
-    c.note_message("conv", 6, terminal=False)   # in-progress: cursor must stay below it
-    c.note_message("conv", 7, terminal=True)
-    targets = {t["conversation_id"]: t["after_seq"] for t in c.get_backfill_targets()}
-    assert targets["conv"] == 5   # clamped below pending seq 6
+    assert c.is_disposed("never-seeded", 10) is True
 
 
-def test_first_seq_floors_below_history():
+def test_seed_from_server_read_cursor():
     c = _c()
-    c.note_message("conv", 10, terminal=True)   # first seen frame
-    assert {t["conversation_id"]: t["after_seq"] for t in c.get_backfill_targets()}["conv"] == 10
+    c.seed_conversation("conv", cursor=7, max_seen=9)
+    assert c.get_cursor("conv") == 7
+    assert c.is_disposed("conv", 7) is True    # at/below the read cursor
+    assert c.is_disposed("conv", 8) is False   # unread
+    assert c.is_lagging("conv") is True        # cursor 7 < max_seen 9
+
+
+def test_cursor_advance_prunes_settled_and_poison():
+    c = _c()
+    c.seed_conversation("conv", 0, 0)
+    c.settle("conv", 3)
+    c.bump_poison("conv", 4)
+    c.update_cursor("conv", 5)                 # cursor passes both
+    assert c.get_cursor("conv") == 5
+    assert c.is_disposed("conv", 3) is True    # below cursor
+    assert c.poison_count("conv", 4) == 0      # pruned
+    assert c.is_disposed("conv", 6) is False
+
+
+def test_poison_counts_up():
+    c = _c()
+    c.seed_conversation("conv", 0, 0)
+    assert c.bump_poison("conv", 9) == 1
+    assert c.bump_poison("conv", 9) == 2
+    assert c.poison_count("conv", 9) == 2
 
 
 def test_self_mentioned():
