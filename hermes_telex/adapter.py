@@ -106,11 +106,23 @@ class TelexAdapter(BasePlatformAdapter):
 
     # -- lifecycle ----------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False, **_kwargs) -> bool:
+        # Newer hermes builds always pass is_reconnect (gateway/run.py calls
+        # adapter.connect(is_reconnect=...)); older builds call bare connect().
         if not self._runtimes:
             logger.warning("no enabled/configured Telex accounts; nothing to connect")
             return False
         for account_id, rt in self._runtimes.items():
+            # Reconnect re-entry: stop a previous monitor before starting a new
+            # one, or each retry would stack another subscribe loop.
+            if rt.monitor_task is not None and not rt.monitor_task.done():
+                if rt.stop_event is not None:
+                    rt.stop_event.set()
+                rt.monitor_task.cancel()
+                try:
+                    await rt.monitor_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             rt.client.arm_self_id(rt.account.bot_id)
             rt.dispatcher = TelexDispatcher(self, rt.account, rt.client)
             rt.stop_event = asyncio.Event()

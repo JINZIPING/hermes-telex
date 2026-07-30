@@ -145,3 +145,34 @@ async def test_standalone_send(tmp_path, monkeypatch):
     res = await adp._telex_standalone_send(PCfg(), "0a1b2c3d4e5f6071", "hello")
     assert res == {"success": True, "message_id": "mid1"}
     assert sent["conversation_id"] == "0a1b2c3d4e5f6071"
+
+
+async def test_connect_accepts_is_reconnect(monkeypatch):
+    # Regression: newer hermes builds call adapter.connect(is_reconnect=...);
+    # a strict connect(self) signature made every connect/reconnect fail with
+    # "unexpected keyword argument 'is_reconnect'" and telex never came up.
+    import asyncio
+
+    started = []
+
+    async def fake_monitor(client, on_message, stop_event, *, account_id="default"):
+        started.append(account_id)
+        # Behave like the real monitor: run until stopped, absorb cancellation.
+        try:
+            await stop_event.wait()
+        except asyncio.CancelledError:
+            pass
+
+    monkeypatch.setattr(adp, "run_monitor", fake_monitor)
+
+    class Cfg:
+        extra = {"api_key": "k"}
+
+    a = adp.TelexAdapter(Cfg())
+    assert await a.connect(is_reconnect=False) is True
+    await asyncio.sleep(0)   # let the monitor task actually start
+    # Reconnect must be re-entrant: the old monitor is stopped, not stacked.
+    assert await a.connect(is_reconnect=True) is True
+    await asyncio.sleep(0)
+    await a.disconnect()
+    assert started.count("default") == 2
