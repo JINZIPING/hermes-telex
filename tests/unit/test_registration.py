@@ -1,8 +1,16 @@
 """T-01 registration + T-13 enforces_own_access_policy + monitor backfill."""
 
+import os
+
 from hermes_telex import adapter as adp
 from hermes_telex import monitor
 from tests.conftest import StubClient
+
+
+def _isolate_allow_all(monkeypatch):
+    """Register the internal flag with monkeypatch so its teardown restores the
+    real environment even though the adapter writes os.environ directly."""
+    monkeypatch.setenv(adp.INTERNAL_ALLOW_ALL_ENV, "sentinel")
 
 
 class FakeCtx:
@@ -32,12 +40,79 @@ def test_register_platform_kwargs():
     assert any(t["name"] == "telex" for t in ctx.tools)
 
 
-def test_adapter_enforces_own_policy_and_dm_policy():
+def test_adapter_enforces_own_policy_and_dm_policy(monkeypatch):
+    _isolate_allow_all(monkeypatch)
+
     class Cfg:
         extra = {"api_key": "k", "dm_policy": "pairing"}
     a = adp.TelexAdapter(Cfg())
     assert a.enforces_own_access_policy is True
     assert a._dm_policy == "pairing"
+
+
+def test_register_advertises_allow_all_env_and_fails_closed(monkeypatch):
+    """The gateway defers access control to this plugin via an internal
+    allow-all flag. register() must seed it closed so an externally exported
+    HERMES_TELEX_ALLOW_ALL cannot grant blanket access."""
+    _isolate_allow_all(monkeypatch)
+    monkeypatch.setenv(adp.INTERNAL_ALLOW_ALL_ENV, "true")
+
+    ctx = FakeCtx()
+    adp.register(ctx)
+
+    assert ctx.platform["allow_all_env"] == adp.INTERNAL_ALLOW_ALL_ENV
+    assert os.environ[adp.INTERNAL_ALLOW_ALL_ENV] == "false"
+
+
+def test_non_pairing_config_takes_over_authorization(monkeypatch):
+    """Without pairing the plugin is the sole authority (hermes-seatalk parity),
+    so the gateway gate — which refuses to trust group_policy "open" and would
+    otherwise deny every channel message — stands down."""
+    _isolate_allow_all(monkeypatch)
+
+    class Cfg:
+        extra = {"accounts": {"default": {
+            "api_key": "k", "dm_policy": "allowlist", "allow_from": ["u"],
+            "group_policy": "open", "group_sender_allow_from": ["u"],
+            "enabled": True,
+        }}}
+    adp.TelexAdapter(Cfg())
+
+    assert os.environ[adp.INTERNAL_ALLOW_ALL_ENV] == "true"
+
+
+def test_pairing_config_keeps_gateway_gate_and_trusts_groups(monkeypatch):
+    """dm_policy=pairing needs the gateway to deny an unpaired DM so it can
+    issue the pairing code, so allow-all stays off. Group traffic must still be
+    advertised as an allowlist or the gateway would deny channels outright."""
+    _isolate_allow_all(monkeypatch)
+
+    class Cfg:
+        extra = {"accounts": {"default": {
+            "api_key": "k", "dm_policy": "pairing",
+            "group_policy": "open", "group_sender_allow_from": ["u"],
+            "enabled": True,
+        }}}
+    a = adp.TelexAdapter(Cfg())
+
+    assert os.environ[adp.INTERNAL_ALLOW_ALL_ENV] == "false"
+    assert a._dm_policy == "pairing"
+    assert a._group_policy == "allowlist"
+
+
+def test_ungated_open_group_is_not_advertised_as_allowlist(monkeypatch):
+    """A genuinely ungated open group must not claim to be an allowlist — that
+    would defeat the gateway's fail-open guard."""
+    _isolate_allow_all(monkeypatch)
+
+    class Cfg:
+        extra = {"accounts": {"default": {
+            "api_key": "k", "dm_policy": "pairing",
+            "group_policy": "open", "enabled": True,
+        }}}
+    a = adp.TelexAdapter(Cfg())
+
+    assert a._group_policy == "open"
 
 
 def test_check_requirements_no_env(monkeypatch):

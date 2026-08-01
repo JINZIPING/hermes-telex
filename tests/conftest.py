@@ -4,7 +4,45 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from hermes_telex.client import TelexClient
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+@pytest.fixture(autouse=True)
+def _register_telex_platform():
+    """Make ``Platform("telex")`` resolvable when a real hermes is importable.
+
+    ``TelexAdapter.__init__`` calls ``Platform(TELEX_PLATFORM)``, and hermes only
+    mints that pseudo-member once the platform is in its registry. Production
+    always registers first (``platform_registry.create_adapter`` runs the
+    factory after ``register``), so a test that constructs an adapter directly
+    has to do the same or it fails on an enum lookup that can never happen at
+    runtime. Without hermes on the path the plugin's fallback ``Platform`` stub
+    accepts anything and this is a no-op.
+    """
+    try:
+        from gateway.platform_registry import platform_registry
+    except Exception:  # pragma: no cover - offline runs use the plugin's stub
+        yield
+        return
+
+    if not platform_registry.is_registered("telex"):
+        from hermes_telex import adapter as _adp
+
+        class _RegOnlyCtx:
+            def register_platform(self, **kwargs):
+                from gateway.platform_registry import PlatformEntry
+
+                platform_registry.register(PlatformEntry(**kwargs))
+
+            def register_tool(self, **kwargs):
+                pass
+
+        _adp.register(_RegOnlyCtx())
+    yield
 
 
 class StubClient(TelexClient):
@@ -84,7 +122,10 @@ class StubClient(TelexClient):
         return {"file_id": f"f{len(self.uploaded)}", "name": name, "size": len(data), "mime": mime}
 
     async def download_file(self, file_id, *, conversation_id=None, message_id=None):
-        return self.downloads.get(file_id, (b"bytes", "image/png"))
+        # Real PNG magic bytes: hermes validates that image content matches the
+        # extension it is asked to cache as, so a placeholder like b"bytes" is
+        # refused and the caller degrades to a plain link instead of caching.
+        return self.downloads.get(file_id, (_PNG_MAGIC + b"stub", "image/png"))
 
     async def close(self):
         pass

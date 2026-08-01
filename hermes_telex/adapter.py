@@ -1,9 +1,18 @@
 """TelexAdapter + plugin registration.
 
 Registers the ``telex`` platform via the modern Plugin Path
-(``ctx.register_platform`` + hooks); no monkey-patching. Access policy is
-enforced in-plugin (``enforces_own_access_policy``); ``dm_policy=pairing`` is
-delegated to the hermes-agent gateway's built-in pairing handshake.
+(``ctx.register_platform`` + hooks); no monkey-patching.
+
+Access policy is enforced in-plugin. Like hermes-seatalk, the plugin is the
+sole access authority and the gateway's own gate steps aside via an internal
+allow-all flag — which also matches openclaw, where the plugin is the only
+authority and there is no host-side second gate at all.
+
+The one case that cannot use allow-all is ``dm_policy=pairing``: the gateway
+issues a pairing code only when its authorization check *fails*, so allow-all
+would silently authorize unpaired senders. Accounts that delegate pairing keep
+the ``enforces_own_access_policy`` carve-out instead. See
+:func:`_gateway_authorization_mode`.
 """
 
 from __future__ import annotations
@@ -28,6 +37,11 @@ logger = get_logger("adapter")
 TELEX_PLATFORM = "telex"
 TELEX_PLUGIN_NAME = "telex-platform"
 MAX_MESSAGE_LENGTH = sendmod.DEFAULT_TEXT_CHUNK_LIMIT
+
+# Internal — never written to the user's .env. Registered as this platform's
+# allow_all_env so the gateway defers access control to this plugin. Mirrors
+# hermes-seatalk's HERMES_SEATALK_ALLOW_ALL.
+INTERNAL_ALLOW_ALL_ENV = "HERMES_TELEX_ALLOW_ALL"
 
 # hermes base (fallback stubs let this import + unit-test outside hermes).
 try:  # pragma: no cover - real base inside hermes
@@ -81,9 +95,42 @@ class TelexAccountRuntime:
     stop_event: asyncio.Event | None = None
 
 
+def _gateway_allow_all(enabled: list) -> bool:
+    """Whether the gateway's own access gate should stand down for this config.
+
+    True → set the internal allow-all flag: this plugin is the sole access
+    authority, exactly like hermes-seatalk (and like openclaw, which has no
+    host-side gate at all).
+
+    False → leave the gateway gate active. Required for ``dm_policy=pairing``:
+    ``gateway/run.py`` offers a pairing code only when
+    ``_is_user_authorized()`` returns False, and allow-all is checked before
+    the pairing store, so an unpaired sender would be authorized silently.
+    """
+    if not enabled:
+        return False
+    return not any(a.dm_policy == "pairing" for a in enabled)
+
+
+def _gateway_group_policy(account: Any) -> str:
+    """Group policy advertised to the gateway's adapter-trust carve-out.
+
+    Only consulted when allow-all is off (a pairing account). The gateway
+    trusts an own-policy adapter for group traffic only when the effective
+    policy is ``allowlist``; it deliberately refuses to trust ``open``, which
+    was a fail-open. Report ``allowlist`` when this account really does gate
+    group traffic — by channel or by sender — so channels are not blanket
+    denied while the guard still catches a genuinely ungated ``open``.
+    """
+    if account.group_policy == "allowlist" or account.group_sender_allow_from:
+        return "allowlist"
+    return account.group_policy
+
+
 class TelexAdapter(BasePlatformAdapter):
-    # Access is enforced here (gateway trusts us); pairing DMs are forwarded so
-    # the gateway can run its pairing handshake (see _dm_policy below).
+    # Kept for the pairing path, where allow-all must stay off: it lets the
+    # gateway trust our own dm/group decisions instead of default-denying.
+    # Under allow-all this is moot (that flag is checked first).
     enforces_own_access_policy = True
 
     def __init__(self, config: Any):
@@ -99,10 +146,18 @@ class TelexAdapter(BasePlatformAdapter):
         for account in enabled:
             client = get_telex_client(account.api_key, account.base_url, account.bot_id)
             self._runtimes[account.account_id] = TelexAccountRuntime(account=account, client=client)
-        # Expose the primary account's DM policy so the gateway can carve out
-        # pairing from the adapter-trust shortcut (authz_mixin._adapter_dm_policy).
-        self._dm_policy = enabled[0].dm_policy if enabled else \
-            acct.resolve_account(self.extra, acct.DEFAULT_ACCOUNT_ID).dm_policy
+        # Gateway authorization handoff (see module docstring). Written on every
+        # construction so a stale value from an earlier config can't linger in
+        # the process.
+        os.environ[INTERNAL_ALLOW_ALL_ENV] = "true" if _gateway_allow_all(enabled) else "false"
+        # Still advertised for the pairing path: with allow-all off the gateway
+        # reads these to carve pairing out of the adapter-trust shortcut
+        # (authz_mixin._adapter_dm_policy / _adapter_group_policy).
+        primary = enabled[0] if enabled else acct.resolve_account(
+            self.extra, acct.DEFAULT_ACCOUNT_ID
+        )
+        self._dm_policy = primary.dm_policy
+        self._group_policy = _gateway_group_policy(primary)
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -356,6 +411,10 @@ _TELEX_PLATFORM_HINT = (
 
 def register(ctx) -> None:
     """Plugin entry point called by the hermes-agent plugin loader."""
+    # Fail closed until the adapter resolves the accounts and decides: this also
+    # prevents an externally exported HERMES_TELEX_ALLOW_ALL from granting
+    # blanket access, since the flag is internal and not a user-facing setting.
+    os.environ[INTERNAL_ALLOW_ALL_ENV] = "false"
     ctx.register_platform(
         name=TELEX_PLATFORM,
         label="Telex",
@@ -371,7 +430,9 @@ def register(ctx) -> None:
         max_message_length=MAX_MESSAGE_LENGTH,
         emoji="📨",
         platform_hint=_TELEX_PLATFORM_HINT,
-        # Access is enforced in-plugin; no allowed_users_env / allow_all_env.
+        # Access is enforced in-plugin. The adapter sets this flag from the
+        # resolved accounts (off for pairing); no allowed_users_env.
+        allow_all_env=INTERNAL_ALLOW_ALL_ENV,
     )
     try:
         from .tools import register_telex_tool
